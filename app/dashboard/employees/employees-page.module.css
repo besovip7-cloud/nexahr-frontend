@@ -1,0 +1,418 @@
+.page {
+  --line: #d8dde5;
+  --toolbar-bg: #eef1f5;
+  --toolbar-btn: #d5dbe2;
+  --toolbar-btn-border: #c7ced8;
+  --toolbar-text: #5f6773;
+  --table-head: #f4f5f7;
+  --table-row: #ffffff;
+  --table-hover: #f8fafc;
+  --panel-bg: #ffffff;
+  --panel-border: #d9dfe8;
+  --text: #4b5563;
+  --text-soft: #7b8794;
+
+  color: var(--text);
+  direction: ltr;
+  min-height: 100%;
+}
+
+.fullCard {
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+}
+
+.erpToolbarWrap {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  background: var(--toolbar-bg);
+  border-bottom: 1px solid var(--line);
+  flex-wrap: wrap;
+}
+
+.erpToolbarLeft {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-wrap: wrap;
+}
+
+.erpToolbarRight {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.erpToolbarButton {
+  min-height: 34px;
+  padding: 0 18px;
+  border: 1px solid var(--toolbar-btn-border);
+  background: var(--toolbar-btn);
+  color: var(--toolbar-text);
+  font-size: 13px;
+  font-weight: 500;
+  border-radius: 2px;
+  cursor: pointer;
+}
+
+.erpIconButton {
+  width: 32px;
+  height: 32px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: #6b7280;
+  border-radius: 2px;
+  cursor: pointer;
+  font-size: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.erpIconButton::before {
+  color: inherit;
+  font-size: 15px;
+  line-height: 1;
+}
+
+.erpIconButton[title="Refresh"]::before {
+  content: "\21bb";
+}
+
+.erpIconButton[title="Edit"]::before {
+  content: "\270e";
+}
+
+.erpIconButton[title="Expand"]::before {
+  content: "\2922";
+}
+
+.erpIconButton[title="Split View"]::before {
+  content: "\2610";
+}
+
+.erpIconButton[title="Share"]::before {
+  content: "\2197";
+}
+
+.erpIconButton[title="Menu"]::before {
+  content: "\2637";
+}
+
+.toolbarDropdown {
+  position: relative;
+}
+
+.toolbarArrow {
+  margin-left: 6px;
+  font-size: 0;
+}
+
+.toolbarArrow::before {
+  content: "\25be";
+  font-size: 10px;
+  line-height: 1;
+}
+
+.toolbarMenu {
+  position: absolute;
+  top: calc(100% + 1px);
+  left: 0;
+  min-width: 210px;
+  background: #cfd5dd;
+  border: 1px solid #bcc4cf;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.12);
+  z-index: 50;
+}
+
+.toolbarMenuItem {
+  width: 100%;
+  min-height: 36px;
+  border: 0;
+  background: transparent;
+  color: #6f7681;
+  text-align: left;
+  padding: 0 16px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.toolbarMenuItem:hover {
+  background: rgba(255, 255, 255, 0.22);
+}
+
+.filterBar {
+  padding: 10px;
+  border-bottom: 1px solid var(--line);
+  background: #fafbfc;
+}
+
+.filterControls {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(160px, 1fr)) minmax(260px, 1.3fr);
+  gap: 8px;
+}
+
+.controlSelect,
+.searchInput {
+  width: 100%;
+  height: 34px;
+  border: 1px solid #d2d8e0;
+  background: #ffffff;
+  color: var(--text);
+  padding: 0 10px;
+  font-size: 13px;
+  outline: none;
+}
+
+.searchBox {
+  position: relative;
+}
+
+.searchInput {
+  padding-right: 34px;
+}
+
+.searchIcon {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: #8a94a3;
+  font-size: 0;
+  pointer-events: none;
+}
+
+.searchIcon::before {
+  content: "\2315";
+  font-size: 12px;
+  line-height: 1;
+}
+
+.messageBanner {
+  margin: 10px;
+  background: #eef5ff;
+  border: 1px solid #d7e6ff;
+  color: #4b5563;
+  padding: 10px 12px;
+  font-size: 13px;
+}
+
+.tableWrap {
+  overflow-x: auto;
+  min-height: 620px;
+  background: #ffffff;
+}
+
+.table {
+  width: 100%;
+  min-width: 1650px;
+  border-collapse: collapse;
+}
+
+.th,
+.thCheckbox,
+.thSortable,
+.thAction {
+  background: var(--table-head);
+  color: #5f6773;
+  font-size: 13px;
+  font-weight: 500;
+  text-align: left;
+  padding: 10px 10px;
+  border-bottom: 1px solid var(--line);
+  border-right: 1px solid #eceff3;
+  white-space: nowrap;
+}
+
+.thSortable {
+  cursor: pointer;
+  user-select: none;
+}
+
+.sortIcon {
+  margin-left: 6px;
+  font-size: 0;
+  opacity: 0.7;
+}
+
+.sortIcon::before {
+  content: "\2195";
+  font-size: 10px;
+  line-height: 1;
+}
+
+.thCheckbox,
+.tdCheckbox {
+  width: 42px;
+  text-align: center;
+}
+
+.thAction,
+.tdAction {
+  width: 62px;
+  text-align: center;
+}
+
+.tr {
+  background: var(--table-row);
+}
+
+.tr:hover {
+  background: var(--table-hover);
+}
+
+.td,
+.tdCheckbox,
+.tdCode,
+.tdText,
+.tdAction {
+  padding: 10px 10px;
+  border-bottom: 1px solid #eef1f4;
+  border-right: 1px solid #f1f3f6;
+  color: #556070;
+  font-size: 13px;
+  white-space: nowrap;
+  text-align: left;
+}
+
+.tdCode {
+  font-weight: 600;
+}
+
+.tdText {
+  min-width: 180px;
+}
+
+.menuButton {
+  width: 28px;
+  height: 28px;
+  border: 1px solid #d7dde6;
+  background: #ffffff;
+  color: #5f6773;
+  font-size: 0;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.menuButton::before {
+  content: "\22ee";
+  color: inherit;
+  font-size: 16px;
+  line-height: 1;
+}
+
+.paginationBar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 10px;
+  border-top: 1px solid var(--line);
+  background: #fafbfc;
+}
+
+.paginationInfo {
+  color: #5f6773;
+  font-size: 13px;
+}
+
+.paginationControls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.paginationButton {
+  min-width: 74px;
+  height: 32px;
+  border: 1px solid #d4dae3;
+  background: #ffffff;
+  color: #4b5563;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.paginationButton:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.pageNumber {
+  min-width: 32px;
+  height: 32px;
+  background: #e8edf5;
+  border: 1px solid #d4dae3;
+  display: grid;
+  place-items: center;
+  font-size: 12px;
+  font-weight: 700;
+  color: #4b5563;
+}
+
+.contextMenu {
+  position: fixed;
+  z-index: 120;
+  width: 220px;
+  background: #ffffff;
+  border: 1px solid #d9dfe8;
+  box-shadow: 0 16px 32px rgba(15, 23, 42, 0.12);
+  overflow: hidden;
+}
+
+.contextItem {
+  width: 100%;
+  min-height: 38px;
+  border: 0;
+  border-bottom: 1px solid #edf1f4;
+  background: transparent;
+  color: #4b5563;
+  text-align: left;
+  padding: 0 14px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.contextItem:hover {
+  background: #f7f9fb;
+}
+
+.contextItemDanger {
+  color: #dc2626;
+}
+
+.emptyState {
+  min-height: 620px;
+  display: grid;
+  place-items: center;
+  color: #8a94a3;
+  font-size: 14px;
+  background: #ffffff;
+}
+
+@media (max-width: 1000px) {
+  .filterControls {
+    grid-template-columns: repeat(2, minmax(180px, 1fr));
+  }
+}
+
+@media (max-width: 760px) {
+  .erpToolbarWrap {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .erpToolbarRight {
+    justify-content: flex-start;
+  }
+
+  .filterControls {
+    grid-template-columns: 1fr;
+  }
+}

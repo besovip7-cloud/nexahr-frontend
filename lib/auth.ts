@@ -1,24 +1,65 @@
+import {
+  readLocalStorage,
+  removeLocalStorage,
+  writeLocalStorage,
+} from "./browser-storage";
+
 export const TOKEN_KEY = "access_token";
 export const REFRESH_TOKEN_KEY = "refresh_token";
+const LOGIN_PATH = "/login";
+const REDIRECT_LOCK_MS = 2000;
+let isRedirectingToLogin = false;
+
+type LoginRedirectRouter = {
+  replace: (href: string) => void;
+};
 
 export function getAccessToken(): string | null {
-  if (typeof window === "undefined") return null;
-  return localStorage.getItem(TOKEN_KEY);
+  return readLocalStorage(TOKEN_KEY);
 }
 
 export function getRefreshToken(): string | null {
-  if (typeof window === "undefined") return null;
-  return localStorage.getItem(REFRESH_TOKEN_KEY);
+  return readLocalStorage(REFRESH_TOKEN_KEY);
 }
 
 export function setAuthTokens(accessToken: string, refreshToken: string) {
-  if (typeof window === "undefined") return;
-  localStorage.setItem(TOKEN_KEY, accessToken);
-  localStorage.setItem(REFRESH_TOKEN_KEY, refreshToken);
+  writeLocalStorage(TOKEN_KEY, accessToken);
+  writeLocalStorage(REFRESH_TOKEN_KEY, refreshToken);
 }
 
 export function clearAuthTokens() {
-  if (typeof window === "undefined") return;
-  localStorage.removeItem(TOKEN_KEY);
-  localStorage.removeItem(REFRESH_TOKEN_KEY);
+  removeLocalStorage(TOKEN_KEY);
+  removeLocalStorage(REFRESH_TOKEN_KEY);
+}
+
+export function redirectToLogin(router?: LoginRedirectRouter) {
+  if (typeof window !== "undefined") {
+    if (window.location.pathname === LOGIN_PATH) {
+      return;
+    }
+
+    if (isRedirectingToLogin) {
+      return;
+    }
+
+    isRedirectingToLogin = true;
+
+    window.setTimeout(() => {
+      isRedirectingToLogin = false;
+    }, REDIRECT_LOCK_MS);
+  }
+
+  if (router) {
+    router.replace(LOGIN_PATH);
+    return;
+  }
+
+  if (typeof window !== "undefined") {
+    window.location.assign(LOGIN_PATH);
+  }
+}
+
+export function logoutAndRedirectToLogin(router?: LoginRedirectRouter) {
+  clearAuthTokens();
+  redirectToLogin(router);
 }

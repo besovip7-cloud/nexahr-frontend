@@ -1,9 +1,12 @@
 "use client";
 
-import { useEffect, useMemo, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
 import { useRouter } from "next/navigation";
-import { apiRequest } from "../../../lib/api";
-import { clearAuthTokens, getAccessToken } from "../../../lib/auth";
+import { apiRequest, getErrorMessage, handleAuthError } from "@/lib/api";
+import { formatMinutesCompact, toMonthInputValue } from "@/lib/date";
+import { triggerFileDownload } from "@/lib/download";
+import { withSearch } from "@/lib/navigation";
+import { toFiniteNumber } from "@/lib/number";
 
 type PayrollRow = {
   id: number;
@@ -23,24 +26,22 @@ type PayrollRow = {
 };
 
 function getCurrentMonth() {
-  const now = new Date();
-  const y = now.getFullYear();
-  const m = String(now.getMonth() + 1).padStart(2, "0");
-  return `${y}-${m}`;
+  return toMonthInputValue(new Date());
 }
 
 function formatMoney(value?: number | string | null) {
   if (value === null || value === undefined) return "--";
+
+  const normalized = Number(value);
+  if (!Number.isFinite(normalized)) return "--";
+
   return new Intl.NumberFormat("en-US", {
     maximumFractionDigits: 0,
-  }).format(Number(value));
+  }).format(normalized);
 }
 
 function formatMinutes(minutes?: number | string | null) {
-  const value = Number(minutes || 0);
-  const hrs = Math.floor(value / 60);
-  const mins = value % 60;
-  return `${hrs}h ${mins}m`;
+  return formatMinutesCompact(minutes, { fallback: "--" });
 }
 
 export default function PayrollPage() {
@@ -54,16 +55,8 @@ export default function PayrollPage() {
   const [message, setMessage] = useState("");
   const [search, setSearch] = useState("");
 
-  async function loadPayroll(targetMonth?: string, showRefreshState = false) {
-    const token = getAccessToken();
-
-    if (!token) {
-      clearAuthTokens();
-      router.replace("/login");
-      return;
-    }
-
-    const selectedMonth = targetMonth || month;
+  const loadPayroll = useCallback(async (targetMonth: string, showRefreshState = false) => {
+    const selectedMonth = targetMonth;
 
     try {
       if (showRefreshState) {
@@ -75,7 +68,7 @@ export default function PayrollPage() {
       setMessage("");
 
       const result = await apiRequest<PayrollRow[]>(
-        `/payroll?month=${selectedMonth}`,
+        withSearch("/payroll", { month: selectedMonth }),
         {
           method: "GET",
           auth: true,
@@ -83,26 +76,21 @@ export default function PayrollPage() {
       );
 
       setRows(Array.isArray(result) ? result : []);
-    } catch (error: any) {
-      const text = String(error?.message || "").toLowerCase();
+    } catch (error) {
+      const errorMessage = getErrorMessage(error, "Failed to load payroll");
 
-      if (text.includes("unauthorized") || text.includes("forbidden")) {
-        clearAuthTokens();
-        router.replace("/login");
-        return;
-      }
+      if (handleAuthError(error, router)) return;
 
-      setMessage(error?.message || "Failed to load payroll");
+      setMessage(errorMessage);
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
-  }
+  }, [router]);
 
   useEffect(() => {
-    loadPayroll(month);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    void loadPayroll(getCurrentMonth());
+  }, [loadPayroll]);
 
   const filteredRows = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -124,22 +112,22 @@ export default function PayrollPage() {
     return {
       totalRecords: rows.length,
       totalBaseSalary: rows.reduce(
-        (sum, row) => sum + Number(row.baseSalary || 0),
+        (sum, row) => sum + toFiniteNumber(row.baseSalary),
         0,
       ),
       totalOvertime: rows.reduce(
-        (sum, row) => sum + Number(row.overtimeAmount || 0),
+        (sum, row) => sum + toFiniteNumber(row.overtimeAmount),
         0,
       ),
       totalDeductions: rows.reduce(
         (sum, row) =>
           sum +
-          Number(row.lateDeduction || 0) +
-          Number(row.absenceDeduction || 0),
+          toFiniteNumber(row.lateDeduction) +
+          toFiniteNumber(row.absenceDeduction),
         0,
       ),
       totalNetSalary: rows.reduce(
-        (sum, row) => sum + Number(row.finalSalary || 0),
+        (sum, row) => sum + toFiniteNumber(row.finalSalary),
         0,
       ),
     };
@@ -153,465 +141,254 @@ export default function PayrollPage() {
       await apiRequest("/payroll/generate", {
         method: "POST",
         auth: true,
-        body: JSON.stringify({
+        body: {
           month,
-        }),
+        },
       });
 
       setMessage(`Payroll generated successfully for ${month}`);
       await loadPayroll(month);
-    } catch (error: any) {
-      setMessage(error?.message || "Failed to generate payroll");
+    } catch (error) {
+      if (handleAuthError(error, router)) return;
+      setMessage(getErrorMessage(error, "Failed to generate payroll"));
     } finally {
       setGenerating(false);
     }
   }
 
   function handleRefresh() {
-    loadPayroll(month, true);
+    void loadPayroll(month, true);
   }
 
   function handleApplyMonth() {
-    loadPayroll(month);
+    void loadPayroll(month);
   }
 
   async function handleDownloadPayslip(id: number) {
-    const token = getAccessToken();
-
-    if (!token) {
-      clearAuthTokens();
-      router.replace("/login");
-      return;
-    }
-
     try {
-      const baseUrl =
-        process.env.NEXT_PUBLIC_API_URL || "https://api.getnexhr.com/api";
-
-      const res = await fetch(`${baseUrl}/payroll/payslip/${id}`, {
+      const blob = await apiRequest<Blob>(`/payroll/payslip/${id}`, {
         method: "GET",
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
+        auth: true,
+        responseType: "blob",
       });
 
-      if (!res.ok) {
-        throw new Error("Failed to download payslip");
-      }
-
-      const blob = await res.blob();
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `payslip-${id}.pdf`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      window.URL.revokeObjectURL(url);
-    } catch (error: any) {
-      setMessage(error?.message || "Failed to download payslip");
+      triggerFileDownload(blob, `payslip-${id}.pdf`);
+    } catch (error) {
+      if (handleAuthError(error, router)) return;
+      setMessage(getErrorMessage(error, "Failed to download payslip"));
     }
   }
 
   async function handleExportExcel() {
-    const token = getAccessToken();
-
-    if (!token) {
-      clearAuthTokens();
-      router.replace("/login");
-      return;
-    }
-
     try {
-      const baseUrl =
-        process.env.NEXT_PUBLIC_API_URL || "https://api.getnexhr.com/api";
-
-      const res = await fetch(
-        `${baseUrl}/payroll/export/excel?month=${month}`,
+      const blob = await apiRequest<Blob>(
+        withSearch("/payroll/export/excel", { month }),
         {
           method: "GET",
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
+          auth: true,
+          responseType: "blob",
         },
       );
 
-      if (!res.ok) {
-        throw new Error("Failed to export payroll excel");
-      }
-
-      const blob = await res.blob();
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `payroll-${month}.xlsx`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      window.URL.revokeObjectURL(url);
-    } catch (error: any) {
-      setMessage(error?.message || "Failed to export payroll excel");
+      triggerFileDownload(blob, `payroll-${month}.xlsx`);
+    } catch (error) {
+      if (handleAuthError(error, router)) return;
+      setMessage(getErrorMessage(error, "Failed to export payroll excel"));
     }
-  }
-
-  function handleLogout() {
-    clearAuthTokens();
-    router.replace("/login");
   }
 
   return (
     <div style={styles.page}>
-      <aside style={styles.sidebar}>
+      <header style={styles.header}>
         <div>
-          <div style={styles.logoBox}>
-            <div style={styles.logoBadge}>N</div>
-            <div>
-              <div style={styles.logoTitle}>NexaHR</div>
-              <div style={styles.logoSub}>HR & Attendance SaaS</div>
-            </div>
-          </div>
-
-          <nav style={styles.nav}>
-            <button
-              type="button"
-              style={styles.navItem}
-              onClick={() => router.push("/dashboard")}
-            >
-              Dashboard
-            </button>
-
-            <button
-              type="button"
-              style={styles.navItem}
-              onClick={() => router.push("/employees")}
-            >
-              Employees
-            </button>
-
-            <button
-              type="button"
-              style={styles.navItem}
-              onClick={() => router.push("/dashboard/attendance")}
-            >
-              Attendance Daily
-            </button>
-
-            <button
-              type="button"
-              style={styles.navItem}
-              onClick={() => router.push("/dashboard/attendance/monthly")}
-            >
-              Monthly Attendance
-            </button>
-
-            <button
-              type="button"
-              style={styles.navItem}
-              onClick={() => router.push("/dashboard/attendance/history")}
-            >
-              Employee History
-            </button>
-
-            <button
-              type="button"
-              style={styles.navItem}
-              onClick={() => router.push("/dashboard/shifts")}
-            >
-              Shifts
-            </button>
-
-            <button
-              type="button"
-              style={styles.navItem}
-              onClick={() => router.push("/dashboard/shift-assignments")}
-            >
-              Shift Assignments
-            </button>
-
-            <button
-              type="button"
-              style={{ ...styles.navItem, ...styles.navItemActive }}
-            >
-              Payroll
-            </button>
-          </nav>
+          <h1 style={styles.pageTitle}>Payroll Management</h1>
+          <p style={styles.pageSubtitle}>
+            Generate monthly payroll, review salary calculations, and download
+            payslips.
+          </p>
         </div>
 
-        <button type="button" onClick={handleLogout} style={styles.logoutButton}>
-          Logout
-        </button>
-      </aside>
+        <div style={styles.headerActions}>
+          <button
+            type="button"
+            onClick={handleRefresh}
+            style={styles.secondaryButton}
+          >
+            {refreshing ? "Refreshing..." : "Refresh"}
+          </button>
 
-      <main style={styles.main}>
-        <header style={styles.header}>
+          <button
+            type="button"
+            onClick={handleExportExcel}
+            style={styles.primaryButton}
+          >
+            Export Excel
+          </button>
+        </div>
+      </header>
+
+      {message ? <div style={styles.alert}>{message}</div> : null}
+
+      <section style={styles.card}>
+        <div style={styles.toolbar}>
           <div>
-            <h1 style={styles.pageTitle}>Payroll Management</h1>
-            <p style={styles.pageSubtitle}>
-              Generate monthly payroll, review salary calculations, and download
-              payslips.
+            <h2 style={styles.cardTitle}>Payroll Actions</h2>
+            <p style={styles.cardSubtitle}>
+              Choose month, generate payroll, and load salary results.
+            </p>
+          </div>
+        </div>
+
+        <div style={styles.filterGrid}>
+          <input
+            type="month"
+            value={month}
+            onChange={(e) => setMonth(e.target.value)}
+            style={styles.input}
+          />
+
+          <button
+            type="button"
+            onClick={handleApplyMonth}
+            style={styles.secondaryButton}
+          >
+            Load Payroll
+          </button>
+
+          <button
+            type="button"
+            onClick={handleGeneratePayroll}
+            style={styles.primaryButton}
+            disabled={generating}
+          >
+            {generating ? "Generating..." : "Generate Payroll"}
+          </button>
+        </div>
+      </section>
+
+      <section style={styles.statsGrid}>
+        <div style={styles.statCard}>
+          <div style={styles.statLabel}>Records</div>
+          <div style={styles.statValue}>{stats.totalRecords}</div>
+        </div>
+
+        <div style={styles.statCard}>
+          <div style={styles.statLabel}>Base Salaries</div>
+          <div style={styles.statValueSmall}>
+            {formatMoney(stats.totalBaseSalary)}
+          </div>
+        </div>
+
+        <div style={styles.statCard}>
+          <div style={styles.statLabel}>Overtime</div>
+          <div style={styles.statValueSmall}>
+            {formatMoney(stats.totalOvertime)}
+          </div>
+        </div>
+
+        <div style={styles.statCard}>
+          <div style={styles.statLabel}>Deductions</div>
+          <div style={styles.statValueSmall}>
+            {formatMoney(stats.totalDeductions)}
+          </div>
+        </div>
+
+        <div style={styles.statCard}>
+          <div style={styles.statLabel}>Net Salaries</div>
+          <div style={styles.statValueSmall}>
+            {formatMoney(stats.totalNetSalary)}
+          </div>
+        </div>
+      </section>
+
+      <section style={styles.card}>
+        <div style={styles.toolbar}>
+          <div>
+            <h2 style={styles.cardTitle}>Payroll Records</h2>
+            <p style={styles.cardSubtitle}>
+              Search and review payroll records for the selected month.
             </p>
           </div>
 
-          <div style={styles.headerActions}>
-            <button
-              type="button"
-              onClick={handleRefresh}
-              style={styles.secondaryButton}
-            >
-              {refreshing ? "Refreshing..." : "Refresh"}
-            </button>
+          <input
+            type="text"
+            placeholder="Search by employee ID, salary, month..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            style={styles.searchInput}
+          />
+        </div>
 
-            <button
-              type="button"
-              onClick={handleExportExcel}
-              style={styles.primaryButton}
-            >
-              Export Excel
-            </button>
+        {loading ? (
+          <div style={styles.emptyState}>Loading payroll...</div>
+        ) : filteredRows.length === 0 ? (
+          <div style={styles.emptyState}>
+            No payroll records found for the selected month.
           </div>
-        </header>
-
-        {message ? <div style={styles.alert}>{message}</div> : null}
-
-        <section style={styles.card}>
-          <div style={styles.toolbar}>
-            <div>
-              <h2 style={styles.cardTitle}>Payroll Actions</h2>
-              <p style={styles.cardSubtitle}>
-                Choose month, generate payroll, and load salary results.
-              </p>
-            </div>
-          </div>
-
-          <div style={styles.filterGrid}>
-            <input
-              type="month"
-              value={month}
-              onChange={(e) => setMonth(e.target.value)}
-              style={styles.input}
-            />
-
-            <button
-              type="button"
-              onClick={handleApplyMonth}
-              style={styles.secondaryButton}
-            >
-              Load Payroll
-            </button>
-
-            <button
-              type="button"
-              onClick={handleGeneratePayroll}
-              style={styles.primaryButton}
-              disabled={generating}
-            >
-              {generating ? "Generating..." : "Generate Payroll"}
-            </button>
-          </div>
-        </section>
-
-        <section style={styles.statsGrid}>
-          <div style={styles.statCard}>
-            <div style={styles.statLabel}>Records</div>
-            <div style={styles.statValue}>{stats.totalRecords}</div>
-          </div>
-
-          <div style={styles.statCard}>
-            <div style={styles.statLabel}>Base Salaries</div>
-            <div style={styles.statValueSmall}>
-              {formatMoney(stats.totalBaseSalary)}
-            </div>
-          </div>
-
-          <div style={styles.statCard}>
-            <div style={styles.statLabel}>Overtime</div>
-            <div style={styles.statValueSmall}>
-              {formatMoney(stats.totalOvertime)}
-            </div>
-          </div>
-
-          <div style={styles.statCard}>
-            <div style={styles.statLabel}>Deductions</div>
-            <div style={styles.statValueSmall}>
-              {formatMoney(stats.totalDeductions)}
-            </div>
-          </div>
-
-          <div style={styles.statCard}>
-            <div style={styles.statLabel}>Net Salaries</div>
-            <div style={styles.statValueSmall}>
-              {formatMoney(stats.totalNetSalary)}
-            </div>
-          </div>
-        </section>
-
-        <section style={styles.card}>
-          <div style={styles.toolbar}>
-            <div>
-              <h2 style={styles.cardTitle}>Payroll Records</h2>
-              <p style={styles.cardSubtitle}>
-                Search and review payroll records for the selected month.
-              </p>
-            </div>
-
-            <input
-              type="text"
-              placeholder="Search by employee ID, salary, month..."
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              style={styles.searchInput}
-            />
-          </div>
-
-          {loading ? (
-            <div style={styles.emptyState}>Loading payroll...</div>
-          ) : filteredRows.length === 0 ? (
-            <div style={styles.emptyState}>
-              No payroll records found for the selected month.
-            </div>
-          ) : (
-            <div style={styles.tableWrap}>
-              <table style={styles.table}>
-                <thead>
-                  <tr>
-                    <th style={styles.th}>ID</th>
-                    <th style={styles.th}>Employee ID</th>
-                    <th style={styles.th}>Month</th>
-                    <th style={styles.th}>Base Salary</th>
-                    <th style={styles.th}>Overtime</th>
-                    <th style={styles.th}>Late Deduction</th>
-                    <th style={styles.th}>Absence Deduction</th>
-                    <th style={styles.th}>Worked Time</th>
-                    <th style={styles.th}>Late Time</th>
-                    <th style={styles.th}>Overtime Time</th>
-                    <th style={styles.th}>Absent Days</th>
-                    <th style={styles.th}>Final Salary</th>
-                    <th style={styles.th}>Payslip</th>
+        ) : (
+          <div style={styles.tableWrap}>
+            <table style={styles.table}>
+              <thead>
+                <tr>
+                  <th style={styles.th}>ID</th>
+                  <th style={styles.th}>Employee ID</th>
+                  <th style={styles.th}>Month</th>
+                  <th style={styles.th}>Base Salary</th>
+                  <th style={styles.th}>Overtime</th>
+                  <th style={styles.th}>Late Deduction</th>
+                  <th style={styles.th}>Absence Deduction</th>
+                  <th style={styles.th}>Worked Time</th>
+                  <th style={styles.th}>Late Time</th>
+                  <th style={styles.th}>Overtime Time</th>
+                  <th style={styles.th}>Absent Days</th>
+                  <th style={styles.th}>Final Salary</th>
+                  <th style={styles.th}>Payslip</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredRows.map((row) => (
+                  <tr key={row.id}>
+                    <td style={styles.td}>{row.id}</td>
+                    <td style={styles.tdStrong}>{row.employeeId}</td>
+                    <td style={styles.td}>{row.month}</td>
+                    <td style={styles.td}>{formatMoney(row.baseSalary)}</td>
+                    <td style={styles.td}>{formatMoney(row.overtimeAmount)}</td>
+                    <td style={styles.td}>{formatMoney(row.lateDeduction)}</td>
+                    <td style={styles.td}>{formatMoney(row.absenceDeduction)}</td>
+                    <td style={styles.td}>{formatMinutes(row.totalWorkedMinutes)}</td>
+                    <td style={styles.td}>{formatMinutes(row.totalLateMinutes)}</td>
+                    <td style={styles.td}>
+                      {formatMinutes(row.totalOvertimeMinutes)}
+                    </td>
+                    <td style={styles.td}>{row.totalAbsentDays}</td>
+                    <td style={styles.tdStrong}>
+                      {formatMoney(row.finalSalary)}
+                    </td>
+                    <td style={styles.td}>
+                      <button
+                        type="button"
+                        onClick={() => handleDownloadPayslip(row.id)}
+                        style={styles.payslipButton}
+                      >
+                        PDF
+                      </button>
+                    </td>
                   </tr>
-                </thead>
-                <tbody>
-                  {filteredRows.map((row) => (
-                    <tr key={row.id}>
-                      <td style={styles.td}>{row.id}</td>
-                      <td style={styles.tdStrong}>{row.employeeId}</td>
-                      <td style={styles.td}>{row.month}</td>
-                      <td style={styles.td}>{formatMoney(row.baseSalary)}</td>
-                      <td style={styles.td}>
-                        {formatMoney(row.overtimeAmount)}
-                      </td>
-                      <td style={styles.td}>
-                        {formatMoney(row.lateDeduction)}
-                      </td>
-                      <td style={styles.td}>
-                        {formatMoney(row.absenceDeduction)}
-                      </td>
-                      <td style={styles.td}>
-                        {formatMinutes(row.totalWorkedMinutes)}
-                      </td>
-                      <td style={styles.td}>
-                        {formatMinutes(row.totalLateMinutes)}
-                      </td>
-                      <td style={styles.td}>
-                        {formatMinutes(row.totalOvertimeMinutes)}
-                      </td>
-                      <td style={styles.td}>{row.totalAbsentDays}</td>
-                      <td style={styles.tdStrong}>
-                        {formatMoney(row.finalSalary)}
-                      </td>
-                      <td style={styles.td}>
-                        <button
-                          type="button"
-                          onClick={() => handleDownloadPayslip(row.id)}
-                          style={styles.payslipButton}
-                        >
-                          PDF
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </section>
-      </main>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
     </div>
   );
 }
 
 const styles: Record<string, CSSProperties> = {
   page: {
-    minHeight: "100vh",
-    display: "grid",
-    gridTemplateColumns: "280px 1fr",
+    minHeight: "100%",
     background: "#f3f6fb",
     color: "#111827",
-  },
-  sidebar: {
-    background: "#111827",
-    color: "#ffffff",
-    padding: 24,
-    display: "flex",
-    flexDirection: "column",
-    justifyContent: "space-between",
-    minHeight: "100vh",
-  },
-  logoBox: {
-    display: "flex",
-    alignItems: "center",
-    gap: 12,
-    marginBottom: 32,
-  },
-  logoBadge: {
-    width: 44,
-    height: 44,
-    borderRadius: 12,
-    background: "#ffffff",
-    color: "#111827",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    fontWeight: 800,
-    fontSize: 20,
-  },
-  logoTitle: {
-    fontSize: 20,
-    fontWeight: 700,
-  },
-  logoSub: {
-    fontSize: 12,
-    opacity: 0.75,
-  },
-  nav: {
-    display: "grid",
-    gap: 10,
-  },
-  navItem: {
-    background: "transparent",
-    color: "#d1d5db",
-    border: "1px solid rgba(255,255,255,0.08)",
-    borderRadius: 12,
-    padding: "12px 14px",
-    textAlign: "left",
-    cursor: "pointer",
-    fontSize: 14,
-  },
-  navItemActive: {
-    background: "rgba(255,255,255,0.1)",
-    color: "#ffffff",
-    border: "1px solid rgba(255,255,255,0.18)",
-  },
-  logoutButton: {
-    padding: "12px 14px",
-    borderRadius: 12,
-    border: "none",
-    background: "#ffffff",
-    color: "#111827",
-    cursor: "pointer",
-    fontWeight: 600,
-  },
-  main: {
-    padding: 28,
   },
   header: {
     display: "flex",

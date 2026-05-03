@@ -11,7 +11,10 @@ import {
 } from "recharts";
 
 interface Props {
-  data: any[];
+  data: Array<{
+    month: string;
+    present: number;
+  }>;
 }
 
 export default function AttendanceChart({ data }: Props) {

@@ -1,9 +1,40 @@
 "use client";
 
-import { useEffect, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
-import { apiRequest } from "../../../lib/api";
-import { clearAuthTokens, getAccessToken } from "../../../lib/auth";
+import {
+  ResponsiveContainer,
+  BarChart,
+  Bar,
+  CartesianGrid,
+  XAxis,
+  YAxis,
+  Tooltip,
+  ScatterChart,
+  Scatter,
+  ZAxis,
+} from "recharts";
+import { apiRequest, getErrorMessage, handleAuthError } from "@/lib/api";
+import { formatDateSafe } from "@/lib/date";
+import { withSearch } from "@/lib/navigation";
+import { toFiniteNumber } from "@/lib/number";
+import { sanitizeUiText as sanitizeAppText } from "@/lib/ui-text";
+import { useVisibilityPolling } from "@/lib/use-visibility-polling";
+import styles from "./ai-hr-page.module.css";
+
+type RankedEmployee = {
+  employeeId: number;
+  employeeName: string;
+  lateCount: number;
+  lateMinutes: number;
+  absentCount: number;
+  missingPunchCount: number;
+  halfDayCount: number;
+  presentCount: number;
+  totalRecords: number;
+  attendanceRate: number;
+  riskScore: number;
+};
 
 type AIHRResponse = {
   summary: {
@@ -15,443 +46,634 @@ type AIHRResponse = {
     totalAbsentIncidents: number;
     totalMissingPunchIncidents: number;
   };
-  topLateEmployees: Array<{
-    employeeId: number;
-    employeeName: string;
-    lateCount: number;
-    lateMinutes: number;
-    absentCount: number;
-    missingPunchCount: number;
-    halfDayCount: number;
-    presentCount: number;
-    totalRecords: number;
-    attendanceRate: number;
-    riskScore: number;
-  }>;
-  topAbsentEmployees: Array<{
-    employeeId: number;
-    employeeName: string;
-    lateCount: number;
-    lateMinutes: number;
-    absentCount: number;
-    missingPunchCount: number;
-    halfDayCount: number;
-    presentCount: number;
-    totalRecords: number;
-    attendanceRate: number;
-    riskScore: number;
-  }>;
-  topMissingPunchEmployees: Array<{
-    employeeId: number;
-    employeeName: string;
-    lateCount: number;
-    lateMinutes: number;
-    absentCount: number;
-    missingPunchCount: number;
-    halfDayCount: number;
-    presentCount: number;
-    totalRecords: number;
-    attendanceRate: number;
-    riskScore: number;
-  }>;
-  topRiskEmployees: Array<{
-    employeeId: number;
-    employeeName: string;
-    lateCount: number;
-    lateMinutes: number;
-    absentCount: number;
-    missingPunchCount: number;
-    halfDayCount: number;
-    presentCount: number;
-    totalRecords: number;
-    attendanceRate: number;
-    riskScore: number;
-  }>;
+  topLateEmployees: RankedEmployee[];
+  topAbsentEmployees: RankedEmployee[];
+  topMissingPunchEmployees: RankedEmployee[];
+  topRiskEmployees: RankedEmployee[];
   alerts: string[];
 };
 
-export default function AIHRDashboard() {
+type InsightItem = {
+  label: string;
+  value: string | number;
+  tone: "neutral" | "good" | "warn" | "danger";
+};
+
+type RecommendationItem = {
+  title: string;
+  text: string;
+  tone: "good" | "warn" | "danger" | "neutral";
+};
+
+type PeriodOption = 7 | 30 | 90;
+type LoadAiHrOptions = {
+  showRefresh?: boolean;
+  silent?: boolean;
+};
+
+function formatDate(value?: string | null) {
+  return formatDateSafe(value, "--");
+}
+
+function getRiskLevel(score?: number) {
+  const value = toFiniteNumber(score);
+  if (value >= 80) return "High";
+  if (value >= 50) return "Medium";
+  return "Low";
+}
+
+function getRiskTone(score?: number) {
+  const value = toFiniteNumber(score);
+  if (value >= 80) return styles.riskHigh;
+  if (value >= 50) return styles.riskMedium;
+  return styles.riskLow;
+}
+
+function getInitials(name?: string | null) {
+  const text = String(name || "").trim();
+  if (!text) return "NA";
+
+  const parts = text.split(/\s+/).slice(0, 2);
+  return parts.map((part) => part.charAt(0).toUpperCase()).join("");
+}
+
+function sanitizeUiText(value: string) {
+  return sanitizeAppText(value);
+}
+
+export default function AIHRDashboardPage() {
   const router = useRouter();
 
   const [data, setData] = useState<AIHRResponse | null>(null);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [message, setMessage] = useState("");
+  const [selectedPeriod, setSelectedPeriod] = useState<PeriodOption>(30);
+
+  const load = useCallback(
+    async (period: PeriodOption, options: LoadAiHrOptions = {}) => {
+      const { showRefresh = false, silent = false } = options;
+
+      try {
+        if (showRefresh && !silent) setRefreshing(true);
+        else if (!showRefresh) setLoading(true);
+
+        if (!silent) setMessage("");
+
+        let res: AIHRResponse;
+
+        try {
+          res = await apiRequest<AIHRResponse>(
+            withSearch("/dashboard/ai-hr", { days: period }),
+            {
+              method: "GET",
+              auth: true,
+            },
+          );
+        } catch {
+          res = await apiRequest<AIHRResponse>("/dashboard/ai-hr", {
+            method: "GET",
+            auth: true,
+          });
+        }
+
+        setData(res);
+      } catch (e) {
+        const errorMessage = getErrorMessage(e, "Failed to load AI HR dashboard");
+
+        if (handleAuthError(e, router)) return;
+
+        if (!silent) {
+          setMessage(errorMessage);
+        }
+      } finally {
+        setLoading(false);
+        if (showRefresh && !silent) {
+          setRefreshing(false);
+        }
+      }
+    },
+    [router],
+  );
 
   useEffect(() => {
-    load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    void load(selectedPeriod);
+  }, [load, selectedPeriod]);
 
-  async function load() {
-    const token = getAccessToken();
+  const handleSilentRefresh = useCallback(() => {
+    void load(selectedPeriod, { showRefresh: true, silent: true });
+  }, [load, selectedPeriod]);
 
-    if (!token) {
-      clearAuthTokens();
-      router.replace("/login");
-      return;
+  useVisibilityPolling({
+    intervalMs: 30000,
+    onPoll: handleSilentRefresh,
+  });
+
+  const riskDistribution = useMemo(() => {
+    const source = data?.topRiskEmployees || [];
+
+    let low = 0;
+    let medium = 0;
+    let high = 0;
+
+    for (const item of source) {
+      const risk = toFiniteNumber(item.riskScore);
+      if (risk >= 80) high += 1;
+      else if (risk >= 50) medium += 1;
+      else low += 1;
     }
 
-    try {
-      setLoading(true);
-      setMessage("");
+    return [
+      { label: "Low", value: low },
+      { label: "Medium", value: medium },
+      { label: "High", value: high },
+    ];
+  }, [data]);
 
-      const res = await apiRequest<AIHRResponse>("/dashboard/ai-hr", {
-        method: "GET",
-        auth: true,
+  const attendanceRiskScatter = useMemo(() => {
+    return (data?.topRiskEmployees || []).map((item) => ({
+      name: item.employeeName,
+      attendance: item.attendanceRate,
+      risk: item.riskScore,
+      size: Math.max(8, item.absentCount + item.lateCount + item.missingPunchCount),
+    }));
+  }, [data]);
+
+  const topInsights = useMemo<InsightItem[]>(() => {
+    const attendanceRate = data?.summary?.companyAttendanceRate ?? 0;
+    const lateIncidents = data?.summary?.totalLateIncidents ?? 0;
+    const absentIncidents = data?.summary?.totalAbsentIncidents ?? 0;
+    const missingPunch = data?.summary?.totalMissingPunchIncidents ?? 0;
+    const highestRisk = data?.topRiskEmployees?.[0]?.riskScore ?? 0;
+
+    return [
+      {
+        label: "Attendance Health",
+        value: `${attendanceRate}%`,
+        tone: attendanceRate >= 90 ? "good" : attendanceRate >= 75 ? "warn" : "danger",
+      },
+      {
+        label: "Highest Risk Score",
+        value: highestRisk,
+        tone: highestRisk >= 80 ? "danger" : highestRisk >= 50 ? "warn" : "good",
+      },
+      {
+        label: "Late Pressure",
+        value: lateIncidents,
+        tone: lateIncidents >= 20 ? "danger" : lateIncidents >= 10 ? "warn" : "neutral",
+      },
+      {
+        label: "Absence Pressure",
+        value: absentIncidents,
+        tone: absentIncidents >= 15 ? "danger" : absentIncidents >= 8 ? "warn" : "neutral",
+      },
+      {
+        label: "Missing Punch Load",
+        value: missingPunch,
+        tone: missingPunch >= 10 ? "danger" : missingPunch >= 5 ? "warn" : "neutral",
+      },
+    ];
+  }, [data]);
+
+  const recommendations = useMemo<RecommendationItem[]>(() => {
+    if (!data) return [];
+
+    const items: RecommendationItem[] = [];
+    const attendanceRate = data.summary.companyAttendanceRate;
+    const lateIncidents = data.summary.totalLateIncidents;
+    const absentIncidents = data.summary.totalAbsentIncidents;
+    const missingPunch = data.summary.totalMissingPunchIncidents;
+    const topRisk = data.topRiskEmployees[0];
+    const topLate = data.topLateEmployees[0];
+
+    if (attendanceRate < 80) {
+      items.push({
+        title: "Urgent attendance review",
+        text: "Overall attendance is below target. Review branch-level discipline and late start patterns.",
+        tone: "danger",
       });
-
-      setData(res);
-    } catch (e: any) {
-      setMessage(e?.message || "Failed to load AI HR dashboard");
-    } finally {
-      setLoading(false);
+    } else if (attendanceRate < 90) {
+      items.push({
+        title: "Stabilize attendance performance",
+        text: "Attendance is acceptable but not strong. Target teams with repeated delay and absence behavior.",
+        tone: "warn",
+      });
+    } else {
+      items.push({
+        title: "Maintain current attendance quality",
+        text: "Attendance is in a healthy range. Focus on preventing isolated risk cases from growing.",
+        tone: "good",
+      });
     }
-  }
 
-  function handleLogout() {
-    clearAuthTokens();
-    router.replace("/login");
+    if (lateIncidents > absentIncidents && lateIncidents > 0) {
+      items.push({
+        title: "Lateness is the primary issue",
+        text: "The main pressure comes from repeated lateness. Shift start enforcement should be prioritized.",
+        tone: "warn",
+      });
+    }
+
+    if (missingPunch > 0) {
+      items.push({
+        title: "Reduce punch inconsistencies",
+        text: "Missing punch incidents suggest either process gaps or device behavior that needs attention.",
+        tone: "neutral",
+      });
+    }
+
+    if (topRisk) {
+      items.push({
+        title: "Review highest-risk employee cluster",
+        text: `${topRisk.employeeName} leads the risk list. Use this case to detect repeated patterns across similar employees.`,
+        tone: topRisk.riskScore >= 80 ? "danger" : "warn",
+      });
+    }
+
+    if (topLate && topLate.lateMinutes > 0) {
+      items.push({
+        title: "Target cumulative late minutes",
+        text: `${topLate.employeeName} shows the heaviest lateness accumulation. Coaching or schedule review may help.`,
+        tone: "warn",
+      });
+    }
+
+    return items.slice(0, 4);
+  }, [data]);
+
+  if (loading) {
+    return (
+      <div className={styles.loadingPage}>
+        <div className={styles.loadingBox}>Loading AI HR dashboard...</div>
+      </div>
+    );
   }
 
   return (
-    <div style={styles.page}>
-      <aside style={styles.sidebar}>
-        <div>
-          <div style={styles.logoBox}>
-            <div style={styles.logoBadge}>N</div>
-            <div>
-              <div style={styles.logoTitle}>NexaHR</div>
-              <div style={styles.logoSub}>HR & Attendance SaaS</div>
-            </div>
+    <div className={styles.page}>
+      <section className={styles.hero}>
+        <div className={styles.heroLeft}>
+          <div className={styles.heroKicker}>NexaHR Intelligence</div>
+          <h1 className={styles.heroTitle}>AI HR Dashboard</h1>
+          <p className={styles.heroSub}>
+            Smart attendance insights, workforce risks, employee behavior trends,
+            and decision-ready HR analytics.
+          </p>
+
+          <div className={styles.heroActions}>
+            <button
+              type="button"
+              className={styles.primaryButton}
+              onClick={() => router.push("/dashboard/employees")}
+            >
+              Open Employees
+            </button>
+
+            <button
+              type="button"
+              className={styles.secondaryButton}
+              onClick={() => void load(selectedPeriod, { showRefresh: true })}
+            >
+              {refreshing ? "Refreshing..." : "Refresh"}
+            </button>
           </div>
-
-          <nav style={styles.nav}>
-            <button
-              type="button"
-              style={styles.navItem}
-              onClick={() => router.push("/dashboard")}
-            >
-              Dashboard
-            </button>
-
-            <button
-              type="button"
-              style={{ ...styles.navItem, ...styles.navItemActive }}
-            >
-              🧠 AI HR
-            </button>
-
-            <button
-              type="button"
-              style={styles.navItem}
-              onClick={() => router.push("/employees")}
-            >
-              Employees
-            </button>
-
-            <button
-              type="button"
-              style={styles.navItem}
-              onClick={() => router.push("/dashboard/attendance")}
-            >
-              Attendance
-            </button>
-
-            <button
-              type="button"
-              style={styles.navItem}
-              onClick={() => router.push("/dashboard/payroll")}
-            >
-              Payroll
-            </button>
-          </nav>
         </div>
 
-        <button type="button" onClick={handleLogout} style={styles.logoutButton}>
-          Logout
-        </button>
-      </aside>
+        <div className={styles.heroRight}>
+          <div className={styles.periodCard}>
+            <span>Analysis Window</span>
+            <strong>
+              {formatDate(data?.summary?.periodStart)} - {formatDate(data?.summary?.periodEnd)}
+            </strong>
+          </div>
 
-      <main style={styles.main}>
-        <h1 style={styles.title}>🧠 AI HR Dashboard</h1>
+          <div
+            className={`${styles.riskBadge} ${getRiskTone(
+              100 - (data?.summary?.companyAttendanceRate ?? 0),
+            )}`}
+          >
+            {getRiskLevel(100 - (data?.summary?.companyAttendanceRate ?? 0))} Risk
+          </div>
+        </div>
+      </section>
 
-        {message ? <div style={styles.alert}>{message}</div> : null}
+      {message ? <div className={styles.alert}>{message}</div> : null}
 
-        {loading || !data ? (
-          <div style={styles.card}>Loading...</div>
+      <section className={styles.periodFilterWrap}>
+        <div className={styles.periodFilterLabel}>Analysis Period</div>
+        <div className={styles.periodFilterGroup}>
+          {[7, 30, 90].map((period) => (
+            <button
+              key={period}
+              type="button"
+              className={`${styles.periodChip} ${
+                selectedPeriod === period ? styles.periodChipActive : ""
+              }`}
+              onClick={() => setSelectedPeriod(period as PeriodOption)}
+            >
+              Last {period} Days
+            </button>
+          ))}
+        </div>
+      </section>
+
+      <section className={styles.insightStrip}>
+        {topInsights.map((item) => (
+          <div
+            key={item.label}
+            className={`${styles.insightPill} ${
+              item.tone === "good"
+                ? styles.insightGood
+                : item.tone === "warn"
+                ? styles.insightWarn
+                : item.tone === "danger"
+                ? styles.insightDanger
+                : styles.insightNeutral
+            }`}
+          >
+            <span>{item.label}</span>
+            <strong>{item.value}</strong>
+          </div>
+        ))}
+      </section>
+
+      <section className={styles.kpiGrid}>
+        <KpiCard
+          title="Employees Analyzed"
+          value={data?.summary?.employeesAnalyzed ?? 0}
+          note="Coverage across the analysis period"
+        />
+        <KpiCard
+          title="Attendance Rate"
+          value={`${data?.summary?.companyAttendanceRate ?? 0}%`}
+          note="Overall company attendance"
+        />
+        <KpiCard
+          title="Late Incidents"
+          value={data?.summary?.totalLateIncidents ?? 0}
+          note="Detected lateness in the period"
+        />
+        <KpiCard
+          title="Absent Incidents"
+          value={data?.summary?.totalAbsentIncidents ?? 0}
+          note="Recorded absence cases"
+        />
+        <KpiCard
+          title="Missing Punch"
+          value={data?.summary?.totalMissingPunchIncidents ?? 0}
+          note="Punch inconsistencies found"
+        />
+      </section>
+
+      <div className={styles.topLayout}>
+        <Panel title="Smart Alerts" subtitle="Priority HR signals generated by AI">
+          {data?.alerts?.length ? (
+            <div className={styles.alertList}>
+              {data.alerts.map((item, index) => (
+                <div key={`${item}-${index}`} className={styles.smartAlert}>
+                  {item}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <EmptyState text="No alerts available." />
+          )}
+        </Panel>
+
+        <Panel title="Risk Score Distribution" subtitle="Top risk employees grouped by severity">
+          {riskDistribution.every((item) => item.value === 0) ? (
+            <EmptyState text="No risk distribution data." />
+          ) : (
+            <div className={styles.chartWrap}>
+              <ResponsiveContainer width="100%" height={280}>
+                <BarChart
+                  data={riskDistribution}
+                  margin={{ top: 10, right: 10, left: -18, bottom: 0 }}
+                >
+                  <CartesianGrid strokeDasharray="4 4" stroke="rgba(148,163,184,0.16)" />
+                  <XAxis
+                    dataKey="label"
+                    tick={{ fill: "currentColor", fontSize: 12 }}
+                    axisLine={false}
+                    tickLine={false}
+                  />
+                  <YAxis
+                    tick={{ fill: "currentColor", fontSize: 12 }}
+                    axisLine={false}
+                    tickLine={false}
+                  />
+                  <Tooltip
+                    contentStyle={{
+                      borderRadius: 16,
+                      border: "1px solid rgba(255,255,255,0.12)",
+                      background: "rgba(19, 24, 34, 0.88)",
+                      color: "#fff",
+                      backdropFilter: "blur(12px)",
+                    }}
+                  />
+                  <Bar dataKey="value" radius={[12, 12, 0, 0]} fill="#6366f1" maxBarSize={54} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+        </Panel>
+      </div>
+
+      <Panel
+        title="AI Recommendations"
+        subtitle="Practical actions inferred from current attendance behavior"
+      >
+        {recommendations.length ? (
+          <div className={styles.recommendationsGrid}>
+            {recommendations.map((item, index) => (
+              <div
+                key={`${item.title}-${index}`}
+                className={`${styles.recommendationCard} ${
+                  item.tone === "good"
+                    ? styles.recommendationGood
+                    : item.tone === "warn"
+                    ? styles.recommendationWarn
+                    : item.tone === "danger"
+                    ? styles.recommendationDanger
+                    : styles.recommendationNeutral
+                }`}
+              >
+                <div className={styles.recommendationTitle}>{item.title}</div>
+                <div className={styles.recommendationText}>{item.text}</div>
+              </div>
+            ))}
+          </div>
         ) : (
-          <>
-            <div style={styles.summaryGrid}>
-              <div style={styles.card}>
-                <h3 style={styles.cardTitle}>Employees Analyzed</h3>
-                <div style={styles.bigValue}>{data.summary.employeesAnalyzed}</div>
-              </div>
-
-              <div style={styles.card}>
-                <h3 style={styles.cardTitle}>Attendance Rate</h3>
-                <div style={styles.bigValue}>
-                  {data.summary.companyAttendanceRate}%
-                </div>
-              </div>
-
-              <div style={styles.card}>
-                <h3 style={styles.cardTitle}>Late Incidents</h3>
-                <div style={styles.bigValue}>{data.summary.totalLateIncidents}</div>
-              </div>
-
-              <div style={styles.card}>
-                <h3 style={styles.cardTitle}>Absent Incidents</h3>
-                <div style={styles.bigValue}>{data.summary.totalAbsentIncidents}</div>
-              </div>
-
-              <div style={styles.card}>
-                <h3 style={styles.cardTitle}>Missing Punch</h3>
-                <div style={styles.bigValue}>
-                  {data.summary.totalMissingPunchIncidents}
-                </div>
-              </div>
-            </div>
-
-            <div style={styles.card}>
-              <h2 style={styles.sectionTitle}>Smart Alerts</h2>
-              {data.alerts.length > 0 ? (
-                data.alerts.map((x, i) => (
-                  <div key={i} style={styles.insight}>
-                    {x}
-                  </div>
-                ))
-              ) : (
-                <div>No alerts</div>
-              )}
-            </div>
-
-            <div style={styles.grid}>
-              <div style={styles.card}>
-                <h2 style={styles.sectionTitle}>Top Late Employees</h2>
-                {data.topLateEmployees.length > 0 ? (
-                  data.topLateEmployees.map((e, i) => (
-                    <div key={i} style={styles.row}>
-                      <div>
-                        <div style={styles.name}>{e.employeeName}</div>
-                        <div style={styles.sub}>
-                          Late days: {e.lateCount} | Late minutes: {e.lateMinutes}
-                        </div>
-                      </div>
-                      <strong>{e.riskScore}</strong>
-                    </div>
-                  ))
-                ) : (
-                  <div>No data</div>
-                )}
-              </div>
-
-              <div style={styles.card}>
-                <h2 style={styles.sectionTitle}>Top Absent Employees</h2>
-                {data.topAbsentEmployees.length > 0 ? (
-                  data.topAbsentEmployees.map((e, i) => (
-                    <div key={i} style={styles.row}>
-                      <div>
-                        <div style={styles.name}>{e.employeeName}</div>
-                        <div style={styles.sub}>
-                          Absences: {e.absentCount} | Attendance: {e.attendanceRate}%
-                        </div>
-                      </div>
-                      <strong>{e.riskScore}</strong>
-                    </div>
-                  ))
-                ) : (
-                  <div>No data</div>
-                )}
-              </div>
-
-              <div style={styles.card}>
-                <h2 style={styles.sectionTitle}>Top Missing Punch</h2>
-                {data.topMissingPunchEmployees.length > 0 ? (
-                  data.topMissingPunchEmployees.map((e, i) => (
-                    <div key={i} style={styles.row}>
-                      <div>
-                        <div style={styles.name}>{e.employeeName}</div>
-                        <div style={styles.sub}>
-                          Missing punch: {e.missingPunchCount}
-                        </div>
-                      </div>
-                      <strong>{e.riskScore}</strong>
-                    </div>
-                  ))
-                ) : (
-                  <div>No data</div>
-                )}
-              </div>
-
-              <div style={styles.card}>
-                <h2 style={styles.sectionTitle}>Top Risk Employees</h2>
-                {data.topRiskEmployees.length > 0 ? (
-                  data.topRiskEmployees.map((e, i) => (
-                    <div key={i} style={styles.row}>
-                      <div>
-                        <div style={styles.name}>{e.employeeName}</div>
-                        <div style={styles.sub}>
-                          Risk score: {e.riskScore} | Attendance: {e.attendanceRate}%
-                        </div>
-                      </div>
-                      <strong>{e.riskScore}</strong>
-                    </div>
-                  ))
-                ) : (
-                  <div>No data</div>
-                )}
-              </div>
-            </div>
-          </>
+          <EmptyState text="No recommendations available." />
         )}
-      </main>
+      </Panel>
+
+      <Panel
+        title="Attendance vs Risk"
+        subtitle="Higher risk usually aligns with weaker attendance outcomes"
+      >
+        {attendanceRiskScatter.length ? (
+          <div className={styles.chartWrapLarge}>
+            <ResponsiveContainer width="100%" height={320}>
+              <ScatterChart margin={{ top: 10, right: 10, bottom: 0, left: -10 }}>
+                <CartesianGrid strokeDasharray="4 4" stroke="rgba(148,163,184,0.16)" />
+                <XAxis
+                  type="number"
+                  dataKey="attendance"
+                  name="Attendance"
+                  unit="%"
+                  domain={[0, 100]}
+                  tick={{ fill: "currentColor", fontSize: 12 }}
+                  axisLine={false}
+                  tickLine={false}
+                />
+                <YAxis
+                  type="number"
+                  dataKey="risk"
+                  name="Risk"
+                  domain={[0, 100]}
+                  tick={{ fill: "currentColor", fontSize: 12 }}
+                  axisLine={false}
+                  tickLine={false}
+                />
+                <ZAxis type="number" dataKey="size" range={[80, 420]} />
+                <Tooltip
+                  cursor={{ strokeDasharray: "4 4" }}
+                  contentStyle={{
+                    borderRadius: 16,
+                    border: "1px solid rgba(255,255,255,0.12)",
+                    background: "rgba(19, 24, 34, 0.88)",
+                    color: "#fff",
+                    backdropFilter: "blur(12px)",
+                  }}
+                />
+                <Scatter data={attendanceRiskScatter} fill="#0ea5e9" />
+              </ScatterChart>
+            </ResponsiveContainer>
+          </div>
+        ) : (
+          <EmptyState text="No employee scatter data available." />
+        )}
+      </Panel>
+
+      <div className={styles.listGrid}>
+        <Panel title="Top Late Employees" subtitle="Most repeated lateness in the period">
+          <EmployeeRankList
+            items={data?.topLateEmployees || []}
+            meta={(e) => `Late days: ${e.lateCount} \u2022 Late minutes: ${e.lateMinutes}`}
+            router={router}
+          />
+        </Panel>
+
+        <Panel title="Top Absent Employees" subtitle="Most absence cases in the period">
+          <EmployeeRankList
+            items={data?.topAbsentEmployees || []}
+            meta={(e) => `Absences: ${e.absentCount} \u2022 Attendance: ${e.attendanceRate}%`}
+            router={router}
+          />
+        </Panel>
+
+        <Panel title="Top Missing Punch" subtitle="Highest punch inconsistency cases">
+          <EmployeeRankList
+            items={data?.topMissingPunchEmployees || []}
+            meta={(e) =>
+              `Missing punch: ${e.missingPunchCount} \u2022 Records: ${e.totalRecords}`
+            }
+            router={router}
+          />
+        </Panel>
+
+        <Panel title="Top Risk Employees" subtitle="Highest AI risk score">
+          <EmployeeRankList
+            items={data?.topRiskEmployees || []}
+            meta={(e) => `Risk score: ${e.riskScore} \u2022 Attendance: ${e.attendanceRate}%`}
+            router={router}
+          />
+        </Panel>
+      </div>
     </div>
   );
 }
 
-const styles: Record<string, CSSProperties> = {
-  page: {
-    minHeight: "100vh",
-    display: "grid",
-    gridTemplateColumns: "280px 1fr",
-    background: "#f5f7fb",
-  },
-  sidebar: {
-    background: "#111827",
-    color: "#fff",
-    padding: 24,
-    display: "flex",
-    flexDirection: "column",
-    justifyContent: "space-between",
-    minHeight: "100vh",
-  },
-  logoBox: {
-    display: "flex",
-    alignItems: "center",
-    gap: 12,
-    marginBottom: 32,
-  },
-  logoBadge: {
-    width: 44,
-    height: 44,
-    borderRadius: 12,
-    background: "#fff",
-    color: "#111827",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    fontWeight: 800,
-    fontSize: 20,
-  },
-  logoTitle: {
-    fontSize: 20,
-    fontWeight: 700,
-  },
-  logoSub: {
-    fontSize: 12,
-    opacity: 0.75,
-  },
-  nav: {
-    display: "grid",
-    gap: 10,
-  },
-  navItem: {
-    background: "transparent",
-    color: "#d1d5db",
-    border: "1px solid rgba(255,255,255,0.08)",
-    borderRadius: 12,
-    padding: "12px 14px",
-    textAlign: "left",
-    cursor: "pointer",
-    fontSize: 14,
-  },
-  navItemActive: {
-    background: "rgba(255,255,255,0.1)",
-    color: "#fff",
-    border: "1px solid rgba(255,255,255,0.18)",
-  },
-  logoutButton: {
-    padding: "12px 14px",
-    borderRadius: 12,
-    border: "none",
-    background: "#fff",
-    color: "#111827",
-    cursor: "pointer",
-    fontWeight: 600,
-  },
-  main: {
-    padding: 30,
-  },
-  title: {
-    fontSize: 28,
-    fontWeight: "bold",
-    marginBottom: 20,
-    color: "#111827",
-  },
-  alert: {
-    background: "#e0f2fe",
-    padding: 10,
-    borderRadius: 8,
-    marginBottom: 12,
-    color: "#0c4a6e",
-  },
-  summaryGrid: {
-    display: "grid",
-    gridTemplateColumns: "repeat(5, minmax(0, 1fr))",
-    gap: 16,
-    marginBottom: 20,
-  },
-  grid: {
-    display: "grid",
-    gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
-    gap: 20,
-  },
-  card: {
-    background: "#fff",
-    padding: 20,
-    borderRadius: 12,
-    marginBottom: 20,
-    boxShadow: "0 5px 15px rgba(0,0,0,0.05)",
-  },
-  cardTitle: {
-    marginTop: 0,
-    marginBottom: 10,
-    fontSize: 16,
-    color: "#6b7280",
-  },
-  sectionTitle: {
-    marginTop: 0,
-    marginBottom: 12,
-    fontSize: 20,
-    color: "#111827",
-  },
-  bigValue: {
-    fontSize: 30,
-    fontWeight: 800,
-    color: "#111827",
-  },
-  insight: {
-    padding: 10,
-    background: "#eef2ff",
-    borderRadius: 8,
-    marginBottom: 8,
-    color: "#312e81",
-  },
-  row: {
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "center",
-    padding: "10px 0",
-    borderBottom: "1px solid #eee",
-    gap: 12,
-  },
-  name: {
-    fontWeight: 700,
-    color: "#111827",
-  },
-  sub: {
-    fontSize: 13,
-    color: "#6b7280",
-    marginTop: 4,
-  },
-};
+function Panel({
+  title,
+  subtitle,
+  children,
+}: {
+  title: string;
+  subtitle?: string;
+  children: ReactNode;
+}) {
+  return (
+    <section className={styles.panel}>
+      <div className={styles.panelHeader}>
+        <div className={styles.panelTitle}>{title}</div>
+        {subtitle ? <div className={styles.panelSubtitle}>{subtitle}</div> : null}
+      </div>
+      {children}
+    </section>
+  );
+}
+
+function KpiCard({
+  title,
+  value,
+  note,
+}: {
+  title: string;
+  value: string | number;
+  note: string;
+}) {
+  return (
+    <div className={styles.kpiCard}>
+      <div className={styles.kpiTitle}>{title}</div>
+      <div className={styles.kpiValue}>{value}</div>
+      <div className={styles.kpiNote}>{note}</div>
+    </div>
+  );
+}
+
+function EmployeeRankList({
+  items,
+  meta,
+  router,
+}: {
+  items: RankedEmployee[];
+  meta: (item: RankedEmployee) => string;
+  router: ReturnType<typeof useRouter>;
+}) {
+  if (!items.length) {
+    return <EmptyState text="No data available." />;
+  }
+
+  return (
+    <div className={styles.rankList}>
+      {items.map((employee, index) => (
+        <button
+          key={`${employee.employeeId}-${index}`}
+          type="button"
+          className={styles.rankCard}
+          onClick={() => router.push(`/dashboard/employees/${employee.employeeId}`)}
+        >
+          <div className={styles.avatarBadge}>{getInitials(employee.employeeName)}</div>
+
+          <div className={styles.rankBody}>
+            <div className={styles.rankTopRow}>
+              <div className={styles.rankTitle}>{employee.employeeName}</div>
+              <div className={styles.rankPosition}>#{index + 1}</div>
+            </div>
+            <div className={styles.rankText}>{sanitizeUiText(meta(employee))}</div>
+          </div>
+
+          <div className={`${styles.rankRisk} ${getRiskTone(employee.riskScore)}`}>
+            {employee.riskScore}
+          </div>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function EmptyState({ text }: { text: string }) {
+  return <div className={styles.empty}>{text}</div>;
+}
